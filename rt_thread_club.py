@@ -37,79 +37,35 @@ def login_in_club(user_name, pass_word):
         page.ele('#password').input(pass_word)
         time.sleep(random.uniform(0.3, 0.8))
         page.ele('#login').click()
-        time.sleep(10)
 
-        # Step 2: Navigate to sign-in page with WAF retry logic
-        day_num = None
-        max_attempts = 3
-
-        for attempt in range(max_attempts):
-            logging.info(
-                "Loading sign-in page (attempt {0}/{1})...".format(
-                    attempt + 1, max_attempts
-                )
-            )
-            page.get(
-                "https://club.rt-thread.org/index/signin/index.html"
-            )
-
-            # Wait for WAF verification to complete (up to 20 seconds)
-            for i in range(20):
-                time.sleep(1)
-                try:
-                    body = page.ele("tag:body", timeout=1)
-                    body_text = body.text if body else ""
-                except Exception:
-                    body_text = ""
-
-                if "连续签到" in body_text or "每日签到" in body_text:
-                    logging.info(
-                        "Real page loaded after {0}s!".format(i + 1)
-                    )
-                    break
-                if "SafeLine" in body_text or "Security Detection" in body_text:
-                    if i < 3:
-                        logging.info("WAF challenge detected, waiting...")
-                    continue
-
-            # Check what we got
-            try:
-                body = page.ele("tag:body", timeout=2)
-                body_text = body.text if body else ""
-            except Exception:
-                body_text = ""
-
-            logging.info("Page body length: {0}".format(len(body_text)))
-
-            if "连续签到" in body_text or "每日签到" in body_text:
-                logging.info("Sign-in page loaded successfully!")
-                break
-            elif "SafeLine" in body_text or "Security Detection" in body_text:
-                logging.warning(
-                    "WAF still blocking after {0}s on attempt {1}".format(
-                        20, attempt + 1
-                    )
-                )
-                if attempt < max_attempts - 1:
-                    logging.info("Retrying...")
-                    time.sleep(5)
-                continue
-            else:
-                # Unknown page content — log and try anyway
-                snippet = body_text[:300].replace("\n", " | ")
-                logging.warning(
-                    "Unknown page content: {0}".format(snippet)
+        # Step 2: Wait for natural OAuth redirect to club domain
+        # The OAuth redirect is trusted and should bypass WAF
+        logging.info("Waiting for OAuth redirect...")
+        for i in range(20):
+            time.sleep(1)
+            url = page.url
+            if url.startswith("https://club.rt-thread.org/"):
+                logging.info(
+                    "Redirected to club after {0}s: {1}".format(i + 1, url)
                 )
                 break
+            if "验证码" in url or "captcha" in url.lower():
+                logging.warning("CAPTCHA detected in URL after {0}s".format(i + 1))
 
-        # Verify we're on the club domain and have real content
+        current_url = page.url
+        logging.info("Current URL: {0}".format(current_url))
+
+        # Step 3: Navigate to sign-in page via the natural flow
+        if not current_url.startswith("https://club.rt-thread.org/"):
+            # If not on club domain, try going via the main page first
+            logging.info("Not on club domain, trying main page...")
+            page.get("https://club.rt-thread.org/")
+            time.sleep(5)
+            logging.info("Main page URL: {0}".format(page.url))
+
         if not page.url.startswith("https://club.rt-thread.org/"):
-            logging.error("Not on club domain: {0}".format(page.url))
-            sys.exit(1)
-
-        if "连续签到" not in body_text and "每日签到" not in body_text:
             logging.error(
-                "Cannot access sign-in page — WAF is blocking all attempts"
+                "Cannot reach club domain. URL: {0}".format(page.url)
             )
             try:
                 page.get_screenshot(path="/home/runner/paihang.png")
@@ -117,14 +73,78 @@ def login_in_club(user_name, pass_word):
                 pass
             sys.exit(1)
 
-        # Step 3: Find and click the sign-in button
+        # Now click the "每日签到" navigation link
+        logging.info("Looking for 每日签到 nav link...")
+        sign_nav = None
+        nav_selectors = [
+            "xpath://a[contains(@href,'signin')]",
+            "xpath://a[contains(text(),'签到')]",
+            "@@text():每日签到",
+            "tag:a@@href:*signin*",
+        ]
+        for sel in nav_selectors:
+            try:
+                el = page.ele(sel, timeout=3)
+                if el:
+                    sign_nav = el
+                    logging.info("Found nav: text='{0}' href='{1}'".format(
+                        el.text.strip(), el.attr("href")
+                    ))
+                    break
+            except Exception:
+                continue
+
+        if sign_nav:
+            sign_nav.click()
+            time.sleep(5)
+            logging.info("After click, URL: {0}".format(page.url))
+        else:
+            # Fallback: navigate directly
+            logging.info("Nav link not found, navigating directly...")
+            page.get("https://club.rt-thread.org/index/signin/index.html")
+            time.sleep(5)
+
+        # Step 4: Detect WAF and handle
+        try:
+            body = page.ele("tag:body", timeout=3)
+            body_text = body.text if body else ""
+        except Exception:
+            body_text = ""
+
+        logging.info("Page body length: {0}".format(len(body_text)))
+
+        if "SafeLine" in body_text or "Security Detection" in body_text:
+            # WAF challenge — wait for it to resolve
+            logging.info("WAF challenge on sign-in page, waiting...")
+            for i in range(30):
+                time.sleep(1)
+                try:
+                    body = page.ele("tag:body", timeout=1)
+                    body_text = body.text if body else ""
+                except Exception:
+                    body_text = ""
+                if "连续签到" in body_text or "每日签到" in body_text:
+                    logging.info("Real content loaded after {0}s!".format(i + 1))
+                    break
+                if not page.url.startswith("https://club.rt-thread.org/"):
+                    logging.warning(
+                        "Redirected away: {0}".format(page.url)
+                    )
+                    break
+
+        if not page.url.startswith("https://club.rt-thread.org/"):
+            logging.error("Lost club domain after sign-in navigation")
+            sys.exit(1)
+
+        # Step 5: Find and click the check-in button
+        day_num = None
         sign_btn = None
-        selectors = [
+        btn_selectors = [
             "tag:a@@class:btn-signin",
             "xpath://a[contains(@class,'btn-signin')]",
-            "xpath://a[contains(text(),'签到')]",
+            "xpath://a[contains(text(),'签到') and not(contains(@href,'index'))]",
         ]
-        for sel in selectors:
+        for sel in btn_selectors:
             try:
                 el = page.ele(sel, timeout=3)
                 if el:
@@ -134,7 +154,9 @@ def login_in_club(user_name, pass_word):
                 continue
 
         if sign_btn is None:
-            logging.error("Sign-in button not found with any selector!")
+            logging.error("Sign-in button not found!")
+            snippet = body_text[:500].replace("\n", " | ")
+            logging.error("Page content: {0}".format(snippet))
         else:
             try:
                 btn_text = sign_btn.text.strip()
@@ -154,12 +176,12 @@ def login_in_club(user_name, pass_word):
                     logging.info("Sign in successful!")
                     time.sleep(2)
             except Exception as e:
-                logging.error(
-                    "Error with sign-in button: {0}".format(e)
-                )
+                logging.error("Error with sign-in button: {0}".format(e))
 
-        # Step 4: Read consecutive check-in days
+        # Step 6: Read consecutive check-in days
         try:
+            body = page.ele("tag:body", timeout=3)
+            body_text = body.text if body else ""
             for line in body_text.split("\n"):
                 if "连续签到" in line:
                     m = re.search(r"(\d+)\s*天", line)
@@ -172,7 +194,7 @@ def login_in_club(user_name, pass_word):
         except Exception as e:
             logging.error("Error reading day count: {0}".format(e))
 
-        # Step 5: Screenshot
+        # Step 7: Screenshot
         try:
             time.sleep(2)
             page.get_screenshot(path="/home/runner/paihang.png")

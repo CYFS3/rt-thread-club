@@ -1,0 +1,18 @@
+2026-06-11 11:47:55 [INFO] === RT-Thread Club Auto Check-in ===
+2026-06-11 11:47:55 [INFO] Time: 2026-06-11 11:47:55
+2026-06-11 11:47:56 [INFO] Step 1: Logging in...
+2026-06-11 11:48:13 [WARNING] No auto-redirect, current URL: https://www.rt-thread.org/account/user/index.html?response_type=code&authorized=yes&scope=basic&state=1588816557615&client_id=30792375&redirect_uri=https://club.rt-thread.org/index/user/login.html
+2026-06-11 11:48:17 [INFO] Step 2: Navigating to sign-in page...
+2026-06-11 11:48:20 [INFO] Button: '已签到' (disabled=True)
+2026-06-11 11:48:20 [INFO] Already checked in today!
+2026-06-11 11:48:20 [INFO] Consecutive check-in: 12 days
+2026-06-11 11:48:20 [INFO] Result: Signed in, 12 consecutive days!
+2026-06-11 11:48:20 [INFO] Closing browser...
+2026-06-11 11:48:21 [INFO] === Done ===
+2026-06-11 11:53:40 [INFO] === Auto Check-in Start ===
+2026-06-11 11:53:41 [INFO] Logging in...
+2026-06-11 11:54:03 [INFO] No redirect, navigating manually...
+2026-06-11 11:54:10 [INFO] Already checked in!
+2026-06-11 11:54:10 [INFO] 12 consecutive days!
+2026-06-11 11:54:10 [INFO] SUCCESS: 12 days
+2026-06-11 11:54:11 [INFO] === Done ===

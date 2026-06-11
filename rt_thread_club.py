@@ -39,9 +39,9 @@ def login_in_club(user_name, pass_word):
         page.ele('#login').click()
         time.sleep(10)
 
-        # Step 2: Navigate to sign-in page (this will work if login set cookies)
+        # Step 2: Navigate to sign-in page
         page.get("https://club.rt-thread.org/index/signin/index.html")
-        time.sleep(3)
+        time.sleep(5)
 
         # Verify we're on the club domain (not redirected back to login)
         if not page.url.startswith("https://club.rt-thread.org/"):
@@ -49,28 +49,76 @@ def login_in_club(user_name, pass_word):
                 "Login failed! Redirected to: {0}".format(page.url)
             )
             sys.exit(1)
-        logging.info("Login successful, sign-in page loaded!")
+        logging.info("Login successful, sign-in page: {0}".format(page.url))
 
-        # Step 3: Find the sign-in button and determine state
-        day_num = None
-        sign_btn = page.ele("tag:a@@class:btn-signin", timeout=3)
-
-        if sign_btn is None:
-            logging.error("Sign-in button not found!")
-        else:
-            btn_text = sign_btn.text.strip()
-            is_disabled = "disabled" in (sign_btn.attr("class") or "")
-
-            if is_disabled or "已签到" in btn_text:
-                logging.info("Already checked in today!")
-            else:
-                sign_btn.click()
-                logging.info("Sign in successful!")
-                time.sleep(2)
-
-        # Step 4: Read consecutive check-in days
+        # Step 3: Debug — check page content
         try:
             body_text = page.ele("tag:body", timeout=3).text
+            logging.info("Page body length: {0}".format(len(body_text)))
+            # Log first 500 chars to diagnose WAF interception
+            snippet = body_text[:500].replace("\n", " | ")
+            logging.info("Page snippet: {0}".format(snippet))
+        except Exception as e:
+            logging.warning("Could not read page body: {0}".format(e))
+            body_text = ""
+
+        # Check if WAF blocked us
+        if "连续签到" not in body_text and "每日签到" not in body_text:
+            logging.error(
+                "WAF or redirect blocked the sign-in page! "
+                "Page does not contain expected content."
+            )
+            try:
+                page.get_screenshot(path="/home/runner/paihang.png")
+            except Exception:
+                pass
+            sys.exit(1)
+
+        # Step 4: Find the sign-in button
+        day_num = None
+        sign_btn = None
+        selectors = [
+            "tag:a@@class:btn-signin",
+            "xpath://a[contains(@class,'btn-signin')]",
+            "xpath://a[contains(text(),'签到')]",
+        ]
+        for sel in selectors:
+            try:
+                sign_btn = page.ele(sel, timeout=3)
+                if sign_btn:
+                    break
+            except Exception:
+                continue
+
+        if sign_btn is None:
+            logging.error("Sign-in button not found with any selector!")
+            try:
+                page.get_screenshot(path="/home/runner/paihang.png")
+            except Exception:
+                pass
+        else:
+            try:
+                btn_text = sign_btn.text.strip()
+                btn_class = sign_btn.attr("class") or ""
+                is_disabled = "disabled" in btn_class
+
+                logging.info(
+                    "Sign-in button: text='{0}', class='{1}'".format(
+                        btn_text, btn_class
+                    )
+                )
+
+                if is_disabled or "已签到" in btn_text:
+                    logging.info("Already checked in today!")
+                else:
+                    sign_btn.click()
+                    logging.info("Sign in successful!")
+                    time.sleep(2)
+            except Exception as e:
+                logging.error("Error interacting with sign-in button: {0}".format(e))
+
+        # Step 5: Read consecutive check-in days from body text
+        try:
             for line in body_text.split("\n"):
                 if "连续签到" in line:
                     m = re.search(r"(\d+)\s*天", line)
@@ -83,7 +131,7 @@ def login_in_club(user_name, pass_word):
         except Exception as e:
             logging.error("Error reading day count: {0}".format(e))
 
-        # Step 5: Screenshot
+        # Step 6: Screenshot
         try:
             time.sleep(2)
             page.get_screenshot(path="/home/runner/paihang.png")

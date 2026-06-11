@@ -6,12 +6,27 @@ import logging
 import requests
 from DrissionPage import ChromiumPage, ChromiumOptions
 
+LOGIN_URL = (
+    "https://www.rt-thread.org/account/user/index.html"
+    "?response_type=code&authorized=yes&scope=basic"
+    "&state=1588816557615&client_id=30792375"
+    "&redirect_uri=https://club.rt-thread.org/index/user/login.html"
+)
+SIGNIN_URL = "https://club.rt-thread.org/index/signin/index.html"
+CLUB_HOME = "https://club.rt-thread.org/"
 
-def login_in_club_via_requests(user_name, pass_word):
-    """
-    Pure HTTP requests approach — avoids browser fingerprinting entirely.
-    Many WAFs only challenge browser requests; plain HTTP may bypass them.
-    """
+
+def login_in_club(user_name, pass_word):
+    """Try requests first, then browser with club-native login flow."""
+    day_num = _try_requests(user_name, pass_word)
+    if day_num is not None:
+        return day_num
+    logging.info("Requests approach failed, trying browser...")
+    return _try_browser(user_name, pass_word)
+
+
+def _try_requests(user_name, pass_word):
+    """Pure HTTP approach — may bypass WAF that targets browsers."""
     session = requests.Session()
     session.headers.update({
         "User-Agent": (
@@ -21,136 +36,60 @@ def login_in_club_via_requests(user_name, pass_word):
         ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     })
 
-    # Step 1: GET the OAuth login page to get cookies
-    login_url = (
-        "https://www.rt-thread.org/account/user/index.html"
-        "?response_type=code&authorized=yes&scope=basic"
-        "&state=1588816557615&client_id=30792375"
-        "&redirect_uri=https://club.rt-thread.org/index/user/login.html"
+    # GET login page
+    r = session.get(LOGIN_URL, timeout=30)
+    logging.info("[req] Login page: {0}".format(r.status_code))
+
+    # Extract CSRF token
+    m = re.search(
+        r'<input[^>]*name=["\']__token__["\'][^>]*value=["\']([^"\']+)["\']',
+        r.text
     )
-    logging.info("GET login page...")
-    resp = session.get(login_url, timeout=30)
-    logging.info("Login page status: {0}".format(resp.status_code))
+    token = m.group(1) if m else None
 
-    # Extract CSRF token if present
-    import re as _re
-    csrf_match = _re.search(
-        r'<input[^>]*name=["\']_token["\'][^>]*value=["\']([^"\']+)["\']',
-        resp.text
-    )
-    csrf_token = csrf_match.group(1) if csrf_match else None
+    # Extract form action
+    m = re.search(r'<form[^>]*action=["\']([^"\']+)["\']', r.text)
+    action = m.group(1) if m else LOGIN_URL
+    if action.startswith("/"):
+        action = "https://www.rt-thread.org" + action
 
-    # Step 2: POST login credentials
-    login_data = {
-        "username": user_name,
-        "password": pass_word,
-    }
-    if csrf_token:
-        login_data["__token__"] = csrf_token
+    # POST login
+    data = {"username": user_name, "password": pass_word}
+    if token:
+        data["__token__"] = token
 
-    # The login form action URL — the form likely posts to the same URL
-    # or to an API endpoint. Let's try the form action.
-    action_match = _re.search(
-        r'<form[^>]*action=["\']([^"\']+)["\']',
-        resp.text
-    )
-    post_url = action_match.group(1) if action_match else login_url
-    if post_url.startswith("/"):
-        post_url = "https://www.rt-thread.org" + post_url
-
-    logging.info("POST login to: {0}".format(post_url))
-    resp = session.post(
-        post_url,
-        data=login_data,
-        allow_redirects=True,
-        timeout=30,
-    )
-    logging.info("Login response status: {0}".format(resp.status_code))
-    logging.info("Login response URL: {0}".format(resp.url))
-
-    # Check if we landed on club.rt-thread.org
-    if "club.rt-thread.org" in resp.url:
-        logging.info("Login successful — on club domain!")
-    else:
-        logging.warning(
-            "Not on club domain after login: {0}".format(resp.url)
-        )
-
-    # Step 3: Access the sign-in page
-    signin_url = "https://club.rt-thread.org/index/signin/index.html"
-    logging.info("GET sign-in page...")
-    resp = session.get(signin_url, timeout=30)
-    logging.info("Sign-in status: {0}, URL: {1}".format(
-        resp.status_code, resp.url
+    r = session.post(action, data=data, allow_redirects=True, timeout=30)
+    logging.info("[req] After POST: status={0} url={1}".format(
+        r.status_code, r.url
     ))
-    logging.info("Sign-in body length: {0}".format(len(resp.text)))
 
-    # Check for WAF
-    if "SafeLine" in resp.text or "Security Detection" in resp.text:
-        logging.error("WAF blocked the sign-in page!")
+    if "club.rt-thread.org" not in r.url:
+        logging.warning("[req] Not redirected to club domain")
         return None
 
-    # Check if we're logged in
-    if "请登录" in resp.text or "login" in resp.url.lower():
-        logging.error("Not logged in on club domain!")
+    # GET sign-in page
+    r = session.get(SIGNIN_URL, timeout=30)
+    logging.info("[req] Sign-in: status={0} len={1}".format(
+        r.status_code, len(r.text)
+    ))
+
+    if "SafeLine" in r.text or "Security Detection" in r.text:
+        logging.error("[req] WAF blocked sign-in page")
         return None
 
-    # Step 4: Find the check-in button and API endpoint
-    day_num = None
+    if "请登录" in r.text:
+        logging.error("[req] Not logged in on club domain")
+        return None
 
-    if "已签到" in resp.text or "disabled" in resp.text:
-        logging.info("Already checked in today!")
-    elif "立即签到" in resp.text:
-        # Look for the sign-in API endpoint in JavaScript
-        signin_api = _re.search(
-            r"signin[/\']\s*[,\)]|url:\s*['\"]([^'\"]*sign[^'\"]*)['\"]|"
-            r"location\.href\s*=\s*['\"]([^'\"]*sign[^'\"]*)['\"]",
-            resp.text
-        )
-        if signin_api:
-            api_url = signin_api.group(1) or signin_api.group(2)
-            logging.info("Found sign-in API: {0}".format(api_url))
-            # Call the API
-            if api_url.startswith("/"):
-                api_url = "https://club.rt-thread.org" + api_url
-            resp = session.post(api_url, timeout=30)
-            logging.info("Sign-in API response: {0}".format(resp.status_code))
-        else:
-            logging.warning("Could not find sign-in API endpoint")
-    else:
-        logging.warning(
-            "Unknown sign-in page state, body snippet: {0}".format(
-                resp.text[:500]
-            )
-        )
-
-    # Step 5: Read consecutive days
-    match = _re.search(r"连续签到\s*(\d+)\s*天", resp.text)
-    if match:
-        day_num = match.group(1) + " 天"
-        logging.info("Consecutive check-in: {0}".format(day_num))
-
+    day_num = _parse_days(r.text)
+    logging.info("[req] Result: {0}".format(day_num))
     return day_num
 
 
-def login_in_club(user_name, pass_word):
-    """Try requests-based approach first, fall back to browser."""
-    day_num = login_in_club_via_requests(user_name, pass_word)
-    if day_num is not None:
-        return day_num
-
-    # Fallback: browser-based approach
-    logging.info("Requests approach failed, trying browser...")
-    return login_in_club_via_browser(user_name, pass_word)
-
-
-def login_in_club_via_browser(user_name, pass_word):
-    """Browser-based approach using DrissionPage CDP."""
+def _try_browser(user_name, pass_word):
+    """Browser-based login directly via club domain navigation."""
     co = ChromiumOptions()
     co.headless(True)
     co.set_argument('--no-sandbox')
@@ -167,80 +106,84 @@ def login_in_club_via_browser(user_name, pass_word):
     page = ChromiumPage(co)
 
     try:
-        # Step 0: Visit club domain first to clear WAF challenge
-        logging.info("Pre-warming: visiting club domain...")
-        page.get("https://club.rt-thread.org/")
+        # Step 1: Go to club homepage first
+        logging.info("Loading club homepage...")
+        page.get(CLUB_HOME)
         time.sleep(5)
+        logging.info("Club homepage URL: {0}".format(page.url))
 
-        # Wait for WAF challenge to resolve
-        for i in range(15):
-            try:
-                body = page.ele("tag:body", timeout=2)
-                body_text = body.text if body else ""
-            except Exception:
-                body_text = ""
-            if "SafeLine" not in body_text or len(body_text) > 200:
-                break
-            time.sleep(1)
-        logging.info("Club page loaded, length: {0}".format(len(body_text)))
-
-        # Step 1: Login via OAuth
-        login_url = (
-            "https://www.rt-thread.org/account/user/index.html"
-            "?response_type=code&authorized=yes&scope=basic"
-            "&state=1588816557615&client_id=30792375"
-            "&redirect_uri=https://club.rt-thread.org/index/user/login.html"
-        )
-        page.get(login_url)
-        page.ele('#username').input(user_name)
-        time.sleep(1)
-        page.ele('#password').input(pass_word)
-        time.sleep(1)
-        page.ele('#login').click()
-
-        # Step 2: Wait for redirect
-        logging.info("Waiting for OAuth redirect...")
-        for i in range(25):
-            time.sleep(1)
-            if page.url.startswith("https://club.rt-thread.org/"):
-                logging.info(
-                    "Redirected after {0}s: {1}".format(i + 1, page.url)
-                )
-                break
-        logging.info("Current URL: {0}".format(page.url))
-
-        # Step 3: Ensure we're on club domain
-        if not page.url.startswith("https://club.rt-thread.org/"):
-            logging.warning("Not on club domain, navigating manually...")
-            page.get("https://club.rt-thread.org/")
-            time.sleep(5)
-
-        if not page.url.startswith("https://club.rt-thread.org/"):
-            logging.error(
-                "Cannot reach club domain: {0}".format(page.url)
-            )
-            sys.exit(1)
-
-        # Step 4: Navigate to sign-in page
-        nav_clicked = False
+        # Step 2: Click "登录" on club homepage
+        logging.info("Looking for login link on club page...")
+        login_clicked = False
         for sel in [
-            "xpath://a[contains(@href,'signin') and contains(text(),'签到')]",
-            "xpath://a[contains(@href,'signin')]",
-            "@@text():每日签到",
+            "xpath://a[text()='登录' and not(contains(text(),'请登录'))]",
+            "@@text():登录",
+            "xpath://a[contains(text(),'登')]",
         ]:
             try:
-                el = page.ele(sel, timeout=2)
-                if el and "signin" in (el.attr("href") or ""):
-                    el.click()
-                    nav_clicked = True
-                    break
+                el = page.ele(sel, timeout=3)
+                if el:
+                    text = el.text.strip()
+                    href = el.attr("href") or ""
+                    logging.info("Found: text='{0}' href='{1}'".format(text, href))
+                    if text == "登录" or "login" in href.lower():
+                        el.click()
+                        login_clicked = True
+                        break
             except Exception:
                 continue
 
-        if not nav_clicked:
-            page.get("https://club.rt-thread.org/index/signin/index.html")
+        if not login_clicked:
+            logging.info("Login link not found, using OAuth URL directly...")
+            page.get(LOGIN_URL)
+            time.sleep(3)
 
-        # Step 5: Wait for real content
+        # Step 3: Check where we are and login if needed
+        time.sleep(3)
+        current_url = page.url
+        logging.info("After login click, URL: {0}".format(current_url))
+
+        # If we're on the OAuth login page, fill in credentials
+        if "rt-thread.org/account" in current_url:
+            logging.info("On OAuth page, filling credentials...")
+            try:
+                page.ele('#username').input(user_name)
+                time.sleep(1)
+                page.ele('#password').input(pass_word)
+                time.sleep(1)
+                page.ele('#login').click()
+                time.sleep(10)
+            except Exception as e:
+                logging.error("Login form error: {0}".format(e))
+
+        # Step 4: Wait for redirect to club domain
+        for i in range(20):
+            time.sleep(1)
+            if page.url.startswith("https://club.rt-thread.org/"):
+                logging.info("On club domain after {0}s!".format(i + 1))
+                break
+
+        # Step 5: If still not on club domain, navigate there
+        if not page.url.startswith("https://club.rt-thread.org/"):
+            logging.info("Not redirected, navigating to club home...")
+            page.get(CLUB_HOME)
+            time.sleep(5)
+
+        logging.info("Current URL: {0}".format(page.url))
+
+        if not page.url.startswith("https://club.rt-thread.org/"):
+            logging.error("Cannot reach club domain. Aborting.")
+            try:
+                page.get_screenshot(path="/home/runner/paihang.png")
+            except Exception:
+                pass
+            sys.exit(1)
+
+        # Step 6: Navigate to sign-in page
+        page.get(SIGNIN_URL)
+        time.sleep(5)
+
+        # Wait for real content (handle WAF)
         day_num = None
         body_text = ""
         for i in range(30):
@@ -251,57 +194,46 @@ def login_in_club_via_browser(user_name, pass_word):
             except Exception:
                 body_text = ""
             if "连续签到" in body_text:
-                logging.info(
-                    "Sign-in content loaded after {0}s!".format(i + 1)
-                )
+                logging.info("Content loaded after {0}s!".format(i + 1))
                 break
             if not page.url.startswith("https://club.rt-thread.org/"):
                 logging.warning("Redirected: {0}".format(page.url))
                 break
 
-        logging.info(
-            "URL: {0}, body len: {1}".format(page.url, len(body_text))
-        )
+        logging.info("URL: {0}, len: {1}".format(page.url, len(body_text)))
 
         if "连续签到" not in body_text:
             snippet = body_text[:500].replace("\n", " | ")
-            logging.error("Unexpected content: {0}".format(snippet))
+            logging.error("Bad content: {0}".format(snippet))
+            try:
+                page.get_screenshot(path="/home/runner/paihang.png")
+            except Exception:
+                pass
             sys.exit(1)
 
-        # Step 6: Click check-in button
+        # Step 7: Click sign-in button
         for sel in [
             "tag:a@@class:btn-signin",
             "xpath://a[contains(@class,'btn-signin')]",
-            "xpath://a[contains(text(),'签到') and contains(@class,'btn')]",
         ]:
             try:
                 btn = page.ele(sel, timeout=3)
                 if btn:
                     btn_text = btn.text.strip()
                     btn_class = btn.attr("class") or ""
-                    logging.info(
-                        "Button: '{0}' class='{1}'".format(btn_text, btn_class)
-                    )
+                    logging.info("Btn: '{0}' class='{1}'".format(btn_text, btn_class))
                     if "disabled" in btn_class or "已签到" in btn_text:
                         logging.info("Already checked in!")
                     else:
                         btn.click()
-                        logging.info("Sign in clicked!")
+                        logging.info("Check-in clicked!")
                         time.sleep(2)
                     break
             except Exception:
                 continue
 
-        # Step 7: Read days
-        for line in body_text.split("\n"):
-            if "连续签到" in line:
-                m = re.search(r"(\d+)\s*天", line)
-                if m:
-                    day_num = m.group(1) + " 天"
-                    logging.info(
-                        "Consecutive: {0}".format(day_num)
-                    )
-                    break
+        # Step 8: Parse days
+        day_num = _parse_days(body_text)
 
         # Screenshot
         try:
@@ -313,3 +245,12 @@ def login_in_club_via_browser(user_name, pass_word):
         return day_num
     finally:
         page.quit()
+
+
+def _parse_days(text):
+    m = re.search(r"连续签到\s*(\d+)\s*天", text)
+    if m:
+        result = m.group(1) + " 天"
+        logging.info("Consecutive days: {0}".format(result))
+        return result
+    return None

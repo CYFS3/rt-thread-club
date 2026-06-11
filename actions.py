@@ -1,23 +1,7 @@
 import os
 import sys
-import time
 import logging
-import subprocess
 from rt_thread_club import login_in_club
-
-
-def execute_command(cmd_string, cwd=None, shell=True):
-    """Execute the system command at the specified address."""
-
-    sub = subprocess.Popen(cmd_string, cwd=cwd, stdin=subprocess.PIPE,
-                           stdout=subprocess.PIPE, shell=shell, bufsize=4096)
-
-    stdout_str = ''
-    while sub.poll() is None:
-        stdout_str += str(sub.stdout.read())
-        time.sleep(0.1)
-
-    return stdout_str
 
 
 def init_logger():
@@ -33,15 +17,10 @@ def main():
     username = os.environ["CLUB_USERNAME"]
     password = os.environ["CLUB_PASSWORD"]
 
-    execute_command("sudo apt -y update && apt -y upgrade > /dev/null 2>&1")
-    execute_command("sudo chmod a+x chromedriver > /dev/null 2>&1")
-    execute_command("sudo apt install -y gconf-service libasound2 libatk1.0-0 libcairo2 libcups2 libfontconfig1 libgdk-pixbuf2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libxss1 fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils > /dev/null 2>&1")
-    execute_command("sudo wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb > /dev/null 2>&1")
-    execute_command("sudo dpkg -i google-chrome-stable_current_amd64.deb > /dev/null 2>&1; apt-get -fy install > /dev/null 2>&1")
     day_num = login_in_club(username, password)
     try:
         with open("sign_in_days.txt", "w") as f:
-            f.write(day_num)
+            f.write(str(day_num) if day_num else "已签到")
     except Exception as e:
         logging.error(e)
         sys.exit(1)
